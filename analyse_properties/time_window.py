@@ -145,7 +145,7 @@ def area(bbox):
 info
 """
 
-directory = 'C:/Users/esthe/OneDrive - Delft University of Technology/MEP/Image-analysis/post_segmentation_EG/threshold_and_label/other_outputs/properties_T=3.5,Tmin=2.8/1_spot/'
+directory = ''
 
 direc = os.listdir(directory)
 
