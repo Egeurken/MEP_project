@@ -1,0 +1,694 @@
+from itertools import combinations
+
+import numpy as np
+import pandas as pd
+from scipy import stats
+import scipy.optimize
+
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch, FancyArrowPatch
+import plotly.express as px
+import seaborn as sns
+
+
+
+# Set consistent style for seaborn
+sns.set_context("talk", font_scale=1.1)
+sns.set_style("whitegrid")
+
+# Set consistent style for matplotlib
+plt.rcParams.update({
+    "font.size": 14,
+    "axes.titlesize": 16,
+    "axes.labelsize": 14,
+    "xtick.labelsize": 12,
+    "ytick.labelsize": 12,
+    "legend.fontsize": 12,
+    "figure.titlesize": 18
+})
+
+def plot_with_slider_3D(image_data, name):
+    """
+    Plot 3D volumetric image data with a time slider.
+
+    Parameters:
+    image_data (numpy.ndarray): The 4D image data.
+    name (str): Title for the plot.
+
+    Returns:
+    plotly.graph_objs._figure.Figure: Plotly figure object.
+    """
+    # Get the shape of the image data
+    t, x, y, z = image_data.shape
+
+    # Initialize a list to store DataFrame objects for each time frame
+    frames_data = []
+
+    for frame_idx in range(t):
+        # Get data for the current time frame
+        frame_data = image_data[frame_idx]
+
+        # Get the indices and intensity values for non-zero voxels
+        indices = np.nonzero(frame_data)
+        x_vals = indices[0]
+        y_vals = indices[1]
+        z_vals = indices[2]
+        intensity_vals = frame_data[indices]
+
+        # Create a DataFrame for the current time frame
+        frame_df = pd.DataFrame(
+            {"t": [frame_idx] * len(x_vals), "x": x_vals, "y": y_vals, "z": z_vals, "Intensity": intensity_vals})
+
+        # Append the DataFrame to the list of frames
+        frames_data.append(frame_df)
+
+    # Concatenate all DataFrames into a single DataFrame
+    frames_data_concatenated = pd.concat(frames_data, ignore_index=True)
+
+    # Determine the maximum ranges for x, y, and z
+    x_range = [0, x - 1]
+    y_range = [0, y - 1]
+    z_range = [0, z - 1]
+
+    # Calculate maximum range across all axes
+    max_range = max(x_range[1] - x_range[0], y_range[1] - y_range[0], z_range[1] - z_range[0])
+
+    # Calculate center of the range
+    x_center = (x_range[1] + x_range[0]) / 2
+    y_center = (y_range[1] + y_range[0]) / 2
+    z_center = (z_range[1] + z_range[0]) / 2
+
+    # Create 3D scatter plot with time slider using Plotly Express
+    fig = px.scatter_3d(frames_data_concatenated, x="x", y="y", z="z", color="Intensity", opacity=0.5, animation_frame="t")
+
+    # Update layout to set constant axes range and disable autoscaling
+    fig.update_layout(scene=dict(
+        xaxis=dict(range=[x_center - max_range / 2, x_center + max_range / 2]),
+        yaxis=dict(range=[y_center - max_range / 2, y_center + max_range / 2]),
+        zaxis=dict(range=[z_center - max_range / 2, z_center + max_range / 2]),
+        aspectmode="manual",
+        aspectratio=dict(x=1, y=1, z=1)
+    ))
+
+    # Set the title
+    fig.update_layout(title=name)
+
+    # Show the plot
+    fig.show()
+
+    return fig
+
+
+def linear_function(x, a, b):
+    """
+    Calculate the linear function y = a * x + b.
+
+    Parameters:
+    x (float or np.ndarray): The input value(s) for the independent variable.
+    a (float): The slope of the linear function.
+    b (float): The y-intercept of the linear function.
+
+    Returns:
+    float or np.ndarray: The calculated value(s) of the linear function.
+    """
+    return a * x + b
+
+
+
+def linear_fit_func_with_window(x, y, min_time, max_time, min_length, max_length):
+    """
+    Perform a linear fit on a segment of data within a specified window.
+
+    Parameters:
+    x (np.ndarray): The array of x data points.
+    y (np.ndarray): The array of y data points.
+    min_time (float): The minimum x value for the range to fit.
+    max_time (float): The maximum x value for the range to fit.
+    min_length (int): The minimum number of data points to consider for fitting.
+    max_length (int): The maximum number of data points to consider for fitting.
+
+    Returns:
+    tuple: A tuple containing the best x segment, best y segment, best fit parameters (a, b), and parameter errors.
+    """
+    x_segment, y_segment, popt, perr = fit_linear_segment(x, y, min_time, max_time, min_length, max_length)
+    return x_segment, y_segment, popt, perr
+
+def plot_line(ax, x, y, color, label=None):
+    """
+    Plot a line on the given axis.
+
+    Parameters:
+    ax (matplotlib.axes.Axes): The axis to plot on.
+    x (np.ndarray): The array of x data points.
+    y (np.ndarray): The array of y data points.
+    color (str): The color of the line.
+    label (str, optional): The label for the line. Default is None.
+    """
+    ax.plot(x, y, color=color, label=label, linewidth=2)
+
+def fit_data(fit_func, x, y, weights):
+    """
+    Fit data using a weighted function.
+
+    Parameters:
+    fit_func (function): The function to fit.
+    x (np.ndarray): The array of x data points.
+    y (np.ndarray): The array of y data points.
+    weights (np.ndarray): The weights for the data points.
+
+    Returns:
+    tuple: Best fit parameters and their standard deviations.
+    """
+    def fit_wrapper(f, weights):
+        return lambda x, *params: f(x, *params) * weights
+
+    popt, pcov = scipy.optimize.curve_fit(
+        fit_wrapper(fit_func, weights),
+        np.float64(x),
+        np.float64(y),
+    )
+    perr = np.sqrt(np.diag(pcov))
+    return popt, perr
+
+def plot_fitted_line(ax, x, fit_func, popt, color, label=None):
+    """
+    Plot the fitted line on the given axis.
+
+    Parameters:
+    ax (matplotlib.axes.Axes): The axis to plot on.
+    x (np.ndarray): The array of x data points.
+    fit_func (function): The function to fit.
+    popt (tuple): The optimal values for the parameters.
+    color (str): The color of the fitted line.
+    label (str, optional): The label for the fitted line. Default is None.
+    """
+    ax.plot(x, fit_func(x, *popt), color=color, linewidth=1.2, label=label, alpha=0.8)
+
+def display_fit_parameters(ax, fit_func, popt, perr, color, slope_unit):
+    """
+    Display the fit parameters on the given axis.
+
+    Parameters:
+    ax (matplotlib.axes.Axes): The axis to display on.
+    fit_func (function): The function to fit.
+    popt (tuple): The optimal values for the parameters.
+    perr (tuple): The standard deviations of the parameters.
+    color (str): The color of the text.
+    slope_unit (str): The unit of the slope.
+    """
+    params_str = ', '.join([f'{param}={round(val, 3)}±{round(err, 3)}' for param, val, err in zip(fit_func.__code__.co_varnames[1:], popt, perr)])
+    slope = popt[0]
+    ax.text(0.5, 0.9, f'Slope={round(slope, 3)}±{round(perr[0], 3)} {slope_unit}', transform=ax.transAxes, fontsize=12, verticalalignment='top', color=color)
+
+def show_line_plot(ax, strain_data, x, y, color):
+    """
+    Plot a line graph on the given axis.
+
+    Parameters:
+    ax (matplotlib.axes.Axes): The axis to plot on.
+    strain_data (pd.DataFrame): DataFrame containing the data to be plotted.
+    x (str): The column name for the x-axis data.
+    y (str): The column name for the y-axis data.
+    color (str): The color of the line.
+    """
+    # Plot the data on the given axis
+    ax.plot(strain_data[x], strain_data[y], color=color, markersize=4, linestyle='--')
+
+def show_model_line(ax, data, x, y, label=None):
+    """
+    Plot a model line on the given axis.
+
+    Parameters:
+    ax (matplotlib.axes.Axes): The axis to plot on.
+    data (pd.DataFrame): DataFrame containing the data to be plotted.
+    x (str): The column name for the x-axis data.
+    y (str): The column name for the y-axis data.
+    label (str, optional): The label for the line, used in the legend.
+    """
+    # Plot the data on the given axis
+    ax.plot(data[x], data[y], color='black', label=label)
+
+def show_conf_plot(ax, strain_data, x, y, color):
+    """
+    Plot a confidence interval on the given axis.
+
+    Parameters:
+    ax (matplotlib.axes.Axes): The axis to plot on.
+    strain_data (pd.DataFrame): DataFrame containing the data to be plotted, including 'std' and 'n_samples'.
+    x (str): The column name for the x-axis data.
+    y (str): The column name for the y-axis data.
+    color (str): The color for the confidence interval fill.
+    """
+    # Extract standard deviation and sample size from the DataFrame
+    std = strain_data['std'].values
+    n = strain_data['n_samples'].values
+
+    # Calculate the margin of error for a 95% confidence level
+    confidence_level = 0.95
+    t_value = scipy.stats.t.ppf((1 + confidence_level) / 2, n - 1)
+    margin_of_error = t_value * (std / np.sqrt(n))
+
+    # Fill the area between the confidence intervals
+    ax.fill_between(
+        np.float64(strain_data[x]),
+        np.float64(strain_data[y].values - margin_of_error),
+        np.float64(strain_data[y].values + margin_of_error),
+        color=color, alpha=0.1
+    )
+
+
+def fit_function(ax, x_col_name, y_col_name, strain_data, color, fit_func_name, fit_params=None, slope_unit=''):
+    """
+    Fit a function to the data and plot it along with the data points.
+
+    Parameters:
+    ax (matplotlib.axes.Axes): The axis to plot on.
+    x_col_name (str): The column name for the x-axis data.
+    y_col_name (str): The column name for the y-axis data.
+    strain_data (pd.DataFrame): DataFrame containing the data to be plotted.
+    color (str): The color for the fitted line.
+    fit_func_name (str): The name of the fitting function to use ('linear', 'exponential', 'linear_window').
+    fit_params (tuple, optional): Parameters for the 'linear_window' function (min_time, max_time, min_length, max_length).
+    slope_unit (str): The unit of the slope for displaying fit parameters.
+
+    Returns:
+    None
+    """
+    # Extract data and weights
+    x = strain_data[x_col_name].values
+    y = strain_data[y_col_name].values
+    std = strain_data['std'].values
+    n = strain_data['n_samples'].values
+    weights = 1.0 / (std / np.sqrt(n))
+
+    # Define available fitting functions
+    fit_funcs = {
+        'linear': linear_fit_func,
+        'exponential': exponential_fit_func,
+        'linear_window': linear_fit_func_with_window
+    }
+
+    if fit_func_name not in fit_funcs:
+        raise ValueError(f"Invalid fit function name: {fit_func_name}. Choose from {list(fit_funcs.keys())}.")
+
+    # Handle the 'linear_window' fitting function
+    if fit_func_name == 'linear_window' and fit_params:
+        min_time, max_time, min_length, max_length = fit_params
+        try:
+            x_segment, y_segment, popt, perr = linear_fit_func_with_window(x, y, min_time, max_time, min_length, max_length)
+            plot_fitted_line(ax, x_segment, linear_function, popt, color='black', label='Linear Fit (Window)')
+            display_fit_parameters(ax, linear_function, popt, perr, color, slope_unit)
+        except Exception as e:
+            print(f"Error fitting linear window function: {e}")
+            return
+    else:
+        try:
+            popt, perr = fit_data(fit_funcs[fit_func_name], x, y, weights)
+            total_error = np.sqrt(perr[0] ** 2 + std.mean() ** 2)
+            perr_with_total = np.append(perr, total_error)
+            plot_fitted_line(ax, x, fit_funcs[fit_func_name], popt, color, label=f'{fit_func_name.capitalize()} Fit')
+            display_fit_parameters(ax, fit_funcs[fit_func_name], popt, perr_with_total, color, slope_unit)
+        except Exception as e:
+            print(f"Error fitting function {fit_func_name}: {e}")
+            return
+
+
+def plot_strains_in_separate_figures(data, x, y, strains, palette, model=None, fit_func=None, fit_params=None, slope_unit='', show_line=True,
+                                     show_conf=True, title=None, xlab=None, ylab=None):
+    """
+    Plot strains in separate figures.
+
+    Parameters:
+        data (DataFrame): The input data.
+        x (str): The column name for the x-axis data.
+        y (str): The column name for the y-axis data.
+        strains (list): List of strains to plot.
+        palette (str): The color palette for the plots.
+        model (DataFrame, optional): Model data to plot. Defaults to None.
+        fit_func (function, optional): Function for fitting data. Defaults to None.
+        fit_params (dict, optional): Parameters for fitting function. Defaults to None.
+        slope_unit (str, optional): Unit for slope. Defaults to ''.
+        show_line (bool, optional): Whether to show line plot. Defaults to True.
+        show_conf (bool, optional): Whether to show confidence interval plot. Defaults to True.
+        title (str, optional): Title for the plot. Defaults to None.
+        xlab (str, optional): Label for x-axis. Defaults to None.
+        ylab (str, optional): Label for y-axis. Defaults to None.
+    """
+    if len(strains) == 1:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        axes = [ax]
+    else:
+        fig, axes = plt.subplots(nrows=len(strains), ncols=1, figsize=(8, 10))
+
+    colors = sns.color_palette(palette, n_colors=len(strains))
+
+    for ax, strain, color in zip(axes, strains, colors):
+        strain_data = data[data["strain"] == strain]
+
+        if show_line:
+            show_line_plot(ax, strain_data, x, y, color)  # Plot line
+
+        if show_conf:
+            show_conf_plot(ax, strain_data, x, y, color)  # Plot confidence interval
+
+        if fit_func:
+            fit_function(ax, x, y, strain_data, color, fit_func, fit_params, slope_unit)  # Fit data
+
+        if model is not None:
+            model_data = model[model["strain"] == strain]
+            show_model_line(ax, model_data, x, y, 'black')  # Plot model line
+
+        # Define legend elements
+        legend_elements = [
+            Line2D([0], [0], color=color, lw=2, linestyle='--', label='mean values'),
+            Line2D([0], [0], lw=1, color='k', label='linear fit'),
+            Patch(facecolor=color, edgecolor=color, alpha=0.4, label='95% confidence interval'),
+        ]
+        if model is not None:
+            legend_elements.append(Line2D([0], [0], lw=1, color='k', label='Model output'))
+
+        ax.legend(handles=legend_elements, bbox_to_anchor=(1.05, 0.5), loc='center left', fontsize='small')
+
+        global_x_min, global_x_max = data[x].min(), data[x].max()
+        global_y_min, global_y_max = data[y].min(), data[y].max()
+
+        ax.set_xlim(global_x_min * 1.1, global_x_max * 1.1)  # Set x-axis limits
+        ax.set_xlim([0, 16])  # Limit x-axis to 16
+        ax.set_ylim(0, global_y_max * 1.25)  # Set y-axis limits
+
+        ax.set_title(strain)  # Set title
+        ax.set_xlabel(xlab)  # Set x-axis label
+        ax.set_ylabel(ylab)  # Set y-axis label
+
+    plt.tight_layout()  # Adjust layout
+    if title:
+        fig.suptitle(title)  # Set plot title
+        fig.subplots_adjust(top=0.95)  # Adjust subplot spacing
+
+def bootstrap_median(data, num_bootstrap_samples=1000):
+    """
+    Calculate the standard deviation of bootstrapped medians.
+
+    Parameters:
+        data (array-like): The input data.
+        num_bootstrap_samples (int, optional): Number of bootstrap samples. Defaults to 1000.
+
+    Returns:
+        float: Standard deviation of bootstrapped medians.
+    """
+    medians = np.empty(num_bootstrap_samples)
+    n = len(data)
+
+    for i in range(num_bootstrap_samples):
+        sample = np.random.choice(data, size=n, replace=True)
+        medians[i] = np.median(sample)
+
+    return np.std(medians, ddof=1)
+
+
+def plot_single_parameter(result_df, param, hue_order=None, title=None, xlabel=None, ylabel=None):
+    """
+    Plot a single parameter.
+
+    Parameters:
+        result_df (DataFrame): The input data.
+        param (str): The parameter to plot.
+        hue_order (list, optional): List specifying the order of hues. Defaults to None.
+        title (str, optional): Title for the plot. Defaults to None.
+        xlabel (str, optional): Label for x-axis. Defaults to None.
+        ylabel (str, optional): Label for y-axis. Defaults to None.
+    """
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    max_val = result_df[param].max()
+    ax.set_ylim([0, 1.3 * max_val])
+
+    sns.violinplot(data=result_df, x='strain', y=param, cut=0, ax=ax, order=hue_order, palette='Set2', alpha=0.6, legend=False)
+    sns.swarmplot(data=result_df, x='strain', y=param, color='white', hue_order=hue_order, alpha=0.75, ax=ax, size=3)
+
+    boxplot_color = 'dimgray'
+    sns.boxplot(data=result_df, y=param, x='strain', hue='strain', ax=ax, hue_order=hue_order, dodge='auto',
+                linewidth=1.3, flierprops=dict(marker='x', markersize=5), fill=None, legend=False,
+                gap=0.6,
+                palette={window: boxplot_color for window in hue_order})
+
+    if title:
+        ax.set_title(title)
+    if xlabel:
+        ax.set_xlabel(xlabel)
+    if ylabel:
+        ax.set_ylabel(ylabel)
+
+    for strain in hue_order:
+        data_strain = result_df[result_df['strain'] == strain][param]
+        mean_val = data_strain.mean()
+        median_val = data_strain.median()
+        sem_val = data_strain.sem()
+        semedian_val = bootstrap_median(data_strain)
+        print(f'Strain: {strain}, Mean: {mean_val:.3f}, Median: {median_val:.3f}, SEM: {sem_val:.3f}, SEMedian: {semedian_val:.3f}')
+
+    for x, strain in enumerate(hue_order):
+        sample_size = len(result_df[result_df['strain'] == strain])
+        ax.text(x, -0.015, f'n={sample_size}', ha='center', va='center', transform=ax.get_xaxis_transform(), size=10, alpha=0.75)
+
+    combinations_strains = list(combinations(hue_order, 2))
+    for strain1, strain2 in combinations_strains:
+        data_strain1 = result_df[result_df['strain'] == strain1][param]
+        data_strain2 = result_df[result_df['strain'] == strain2][param]
+        if len(data_strain1) > 1 and len(data_strain2) > 1:
+            _, p_value = stats.ttest_ind(data_strain1, data_strain2)
+
+            pos_x = (hue_order.index(strain1) + hue_order.index(strain2)) / 2
+            distance = abs(hue_order.index(strain1) - hue_order.index(strain2))
+            pos_y = ax.get_ylim()[1] * (0.8 + distance * 0.075)
+            ax.text(pos_x, pos_y, f'p={p_value:.3f}', ha='center', va='center', size=10, alpha=0.75)
+
+            style = '|-|'
+            pos = [hue_order.index(strain1), hue_order.index(strain2)]
+            bracketstyle = f"{style}"
+            b_y = pos_y - (0.015 * ax.get_ylim()[1])
+            bracket = FancyArrowPatch(posA=(pos[0], b_y), posB=(pos[1], b_y), arrowstyle=bracketstyle,
+                                      mutation_scale=3, color='black', lw=1, linestyle='-', alpha=0.75)
+            ax.add_patch(bracket)
+
+    plt.tight_layout()
+
+
+def plot_multiple_parameters(result_df, params, hue_order, title=None, xlabel=None, ylabel=None):
+    """
+    Plot multiple parameters.
+
+    Parameters:
+        result_df (DataFrame): The input data.
+        params (list): List of parameters to plot.
+        hue_order (list): List specifying the order of hues.
+        title (str, optional): Title for the plot. Defaults to None.
+        xlabel (list, optional): Labels for x-axis. Defaults to None.
+        ylabel (list, optional): Labels for y-axis. Defaults to None.
+    """
+    num_params = len(params)
+    num_rows = (num_params + 1) // 2
+
+    fig, axes = plt.subplots(nrows=num_rows, ncols=2, figsize=(10, 4*num_rows))
+
+    for i, param in enumerate(params):
+        row = i // 2
+        col = i % 2
+        ax = axes[row, col]
+
+        max_val = result_df[param].max()
+        ax.set_ylim([0, 1.3 * max_val])
+
+        sns.violinplot(data=result_df, x='strain', y=param, cut=0, ax=ax, order=hue_order, palette='colorblind', legend=False)
+        sns.swarmplot(data=result_df, x='strain', y=param, color='white', hue_order=hue_order, alpha=0.5, ax=ax, size=3)
+
+        boxplot_color = 'dimgray'
+        sns.boxplot(data=result_df, y=param, x='strain', hue='strain',ax=ax, hue_order=hue_order, dodge='auto',
+                    linewidth=1.3, flierprops=dict(marker='x', markersize=5), fill=None, legend=False,
+                    gap=0.6,
+                    palette={window: boxplot_color for window in hue_order})
+
+        if xlabel:
+            ax.set_xlabel(xlabel[i])
+        if ylabel:
+            ax.set_ylabel(ylabel[i])
+
+        unique_strains = result_df['strain'].unique().tolist()
+        for x, strain in enumerate(hue_order):
+            sample_size = len(result_df[result_df['strain'] == strain])
+            ax.text(x, -0.01, f'n={sample_size}', ha='center', va='center', transform=ax.get_xaxis_transform(), size=10, alpha=0.75)
+
+        combinations_strains = combinations(hue_order, 2)
+        for strain1, strain2 in combinations_strains:
+            data_strain1 = result_df[result_df['strain'] == strain1][param]
+            data_strain2 = result_df[result_df['strain'] == strain2][param]
+            if len(data_strain1) > 1 and len(data_strain2) > 1:
+                _, p_value = stats.kstest(data_strain1, data_strain2)
+
+                pos_x = (hue_order.index(strain1) + hue_order.index(strain2)) / 2
+                distance = abs(hue_order.index(strain1) - hue_order.index(strain2))
+                pos_y = ax.get_ylim()[1] * (0.8 + distance * 0.075)
+                ax.text(pos_x, pos_y, f'KS={p_value:.3f}', ha='center', va='center', size=10, alpha=0.75)
+
+                style = '|-|'
+                pos = [hue_order.index(strain1), hue_order.index(strain2)]
+                bracketstyle = f"{style}"
+                b_y = pos_y - (0.05 * ax.get_ylim()[1])
+                bracket = FancyArrowPatch(posA=(pos[0], b_y), posB=(pos[1], b_y), arrowstyle=bracketstyle,
+                                          mutation_scale=3, color='black', lw=1, linestyle='-', alpha=0.75)
+                ax.add_patch(bracket)
+
+    if title:
+        fig.suptitle(title)
+
+    plt.tight_layout()
+    plt.show()
+
+
+def fit_linear_segment(x_data, y_data, min_time, max_time, min_length, max_length):
+    """
+    Fits a linear segment to the given data within a specified time range and segment length range.
+
+    Parameters:
+    x_data (numpy.ndarray): The x data to fit.
+    y_data (numpy.ndarray): The y data to fit.
+    min_time (float): The minimum time for the segment.
+    max_time (float): The maximum time for the segment.
+    min_length (int): The minimum length for the segment.
+    max_length (int): The maximum length for the segment.
+
+    Returns:
+    tuple: The best x segment, the best y segment, the best fit parameters, and the standard deviation errors of the parameters.
+
+    Raises:
+    ValueError: If no data points are found in the specified time range or if a suitable fit could not be found.
+    """
+    # Filter data based on time range
+    mask = (x_data >= min_time) & (x_data <= max_time)
+    x_data_filtered = x_data[mask]
+    y_data_filtered = y_data[mask]
+
+    # Raise error if no data points are found
+    if len(x_data_filtered) == 0 or len(y_data_filtered) == 0:
+        raise ValueError("No data points found in the specified time range")
+
+    best_fit_params = None
+    best_fit_error = np.inf
+    best_fit_cov = None
+
+    # Iterate over possible start indices and segment lengths
+    for start_index in range(len(x_data_filtered)):
+        for length in range(min_length, min(max_length, len(x_data_filtered) - start_index) + 1):
+            x_segment = x_data_filtered[start_index:start_index + length]
+            y_segment = y_data_filtered[start_index:start_index + length]
+
+            # Skip if segment is too short
+            if len(x_segment) < 2:
+                continue
+
+            try:
+                # Fit linear function to segment
+                popt, pcov = scipy.optimize.curve_fit(linear_function, x_segment, y_segment)
+                residuals = y_segment - linear_function(x_segment, *popt)
+                fit_error = np.sum(residuals ** 2)
+
+                # Update best fit if current fit is better
+                if fit_error < best_fit_error:
+                    best_fit_error = fit_error
+                    best_fit_params = popt
+                    best_fit_cov = pcov
+                    best_x_segment = x_segment
+                    best_y_segment = y_segment
+            except Exception as e:
+                print(f"Error in fitting: {e}")
+                continue
+
+    # Raise error if no suitable fit was found
+    if best_fit_params is None:
+        raise ValueError("Unable to find a suitable fit")
+
+    # Calculate standard deviation errors of the parameters
+    perr = np.sqrt(np.diag(best_fit_cov))
+
+    return best_x_segment, best_y_segment, best_fit_params, perr
+
+
+def linear_fit_func(x, a, b):
+    """
+    A simple linear function.
+
+    Parameters:
+    x (numpy.ndarray): The x data for the linear function.
+    a (float): The slope of the line.
+    b (float): The y-intercept of the line.
+
+    Returns:
+    numpy.ndarray: The y data for the linear function.
+    """
+    return a * x + b
+
+
+def exponential_fit_func(x, a, b):
+    """
+    This function calculates the exponential fit for a given x, a, and b.
+
+    Parameters:
+    x (float): The input value for which the exponential fit is calculated.
+    a (float): The scaling factor in the exponential function.
+    b (float): The exponent in the exponential function.
+
+    Returns:
+    float: The result of the exponential fit function a * exp(b * x).
+    """
+    # Calculate the exponential fit
+    return a * np.exp(b * x)
+
+
+def plot_strains_in_one_figure(data, x, y, strains, palette, fit_func=None, fit_params=None, slope_unit='',
+                               show_line=True, show_conf=True, title=None, xlab=None, ylab=None):
+    """
+    This function plots the data for different strains in one figure.
+
+    Parameters:
+    data (DataFrame): The data to be plotted.
+    x (str): The column name in 'data' to be used as the x-axis.
+    y (str): The column name in 'data' to be used as the y-axis.
+    strains (list): The list of strains to be plotted.
+    palette (str): The color palette to be used for the strains.
+    fit_func (function, optional): The fit function to be applied to the data. Default is None.
+    fit_params (dict, optional): The parameters for the fit function. Default is None.
+    slope_unit (str, optional): The unit of the slope. Default is ''.
+    show_line (bool, optional): Whether to show the line plot. Default is True.
+    show_conf (bool, optional): Whether to show the confidence interval. Default is True.
+    title (str, optional): The title of the plot. Default is None.
+    xlab (str, optional): The label for the x-axis. Default is None.
+    ylab (str, optional): The label for the y-axis. Default is None.
+
+    Returns:
+    None
+    """
+    fig, ax = plt.subplots(figsize=(8, 6))
+    if title:
+        fig.suptitle(title, fontsize=16)
+
+    colors = sns.color_palette(palette, n_colors=len(strains))
+    for strain, color in zip(strains, colors):
+        strain_data = data[data["strain"] == strain]
+
+        if show_line:
+            show_line_plot(ax, strain_data, x, y, color)
+
+        if show_conf:
+            show_conf_plot(ax, strain_data, x, y, color)
+
+        if fit_func:
+            fit_function(ax, x, y, strain_data, color, fit_func, fit_params, slope_unit)
+
+    plt.ylim(bottom=0)
+
+    legend_patches = [plt.Rectangle((0, 0), 1, 1, fc=color) for color in colors]
+    ax.legend(legend_patches, strains)
+
+    ax.set_xlabel(xlab)
+    ax.set_ylabel(ylab)
